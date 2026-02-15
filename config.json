@@ -1,6 +1,6 @@
 {
     "api_token": "VEd0k8mSYAJwc8WFjjBaiV50tqZFGluW",
-    "center_address": "Bolzano",
+    "center_point": [46.4983, 11.3547],
     "radius_km": 120,
     "language": "de"
 }

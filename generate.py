@@ -25,7 +25,10 @@ STATUS_COLOR = {
 DEFAULT_MARKER_COLOR = "blue"
 APPROXIMATE_MARKER_COLOR = "black"
 
-# === LOGGING ===
+# === MAP CONFIGURATION ===
+MAP_DEFAULT_ZOOM = 11
+MAP_TILES = 'OpenStreetMap'
+MAP_POPUP_MAX_WIDTH = 350
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -136,7 +139,9 @@ def get_ticket_data(token, use_cache=True, cache_timeout_hours=1):
     # Check if cache is valid and not expired
     if use_cache and cache:
         cache_time = cache.get('timestamp')
-        if cache_time:
+        if not cache_time:
+            logging.debug("Cache exists but has no timestamp")
+        else:
             try:
                 cache_age_hours = (datetime.now() - datetime.fromisoformat(cache_time)).total_seconds() / 3600
                 if cache_age_hours < cache_timeout_hours:
@@ -151,6 +156,11 @@ def get_ticket_data(token, use_cache=True, cache_timeout_hours=1):
     logging.info("Fetching fresh data from API...")
     data = fetch_data_from_api(token)
 
+    # If API returns empty data but we have cached data, preserve the old cache
+    if not data and cache:
+        logging.info("API returned no data, preserving previous cache")
+        return cache.get('data', [])
+    
     # Save to cache with timestamp
     cache = {
         'timestamp': datetime.now().isoformat(),
@@ -378,8 +388,8 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
     # Create base map
     m = folium.Map(
         location=center_point,
-        zoom_start=11,
-        tiles='OpenStreetMap'
+        zoom_start=MAP_DEFAULT_ZOOM,
+        tiles=MAP_TILES
     )
 
     # Add fullscreen button
@@ -397,7 +407,7 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
     for marker in markers:
         folium.Marker(
             location=marker['coords'],
-            popup=folium.Popup(marker['popup'], max_width=350),
+            popup=folium.Popup(marker['popup'], max_width=MAP_POPUP_MAX_WIDTH),
             tooltip=marker['tooltip'],
             icon=folium.Icon(color=marker['color'], icon='info-sign')
         ).add_to(ticket_layer)
@@ -499,7 +509,7 @@ def generate_map(config, language='de', cache_timeout_hours=1):
     )
 
     if not data:
-        logging.warning("No ticket data available - generating empty map")
+        logging.warning("No new ticket data from API - using cached data or generating map with no markers")
 
     # Step 2: Load geo cache (separate from API cache)
     geo_cache = load_json_cache(GEO_CACHE_FILE)
