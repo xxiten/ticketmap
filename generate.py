@@ -12,8 +12,9 @@ from geopy.distance import geodesic
 from datetime import datetime
 
 # === KONSTANTEN ===
-CONFIG_FILE = 'config.json'
-GEO_CACHE_FILE = 'geo_cache.json'
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
+GEO_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'geo_cache.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
 LOGO_URL = 'https://www.netixx.it/fileadmin/user_upload/Netixx_Logo_rgb_digital.png'
 
