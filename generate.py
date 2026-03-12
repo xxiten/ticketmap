@@ -8,7 +8,7 @@ import logging
 import requests
 import argparse
 from folium.plugins import Fullscreen, MarkerCluster
-from geopy.geocoders import Nominatim, Photon
+from geopy.geocoders import Photon
 from geopy.distance import geodesic
 from geopy.extra.rate_limiter import RateLimiter
 from datetime import datetime
@@ -18,7 +18,8 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
 GEO_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'geo_cache.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
-VERSION = '1.0.0'
+TICKET_BASE_URL = 'https://tickets.netixx.it:10443'
+VERSION = '1.0.1'
 LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
@@ -121,8 +122,9 @@ def save_json_cache(file_path, data):
 
 def fetch_data_from_api(token):
     """Fetch ticket data from API."""
+    token = os.environ.get('TICKETMAP_API_TOKEN', token)
     url = (
-        f'https://tickets.netixx.it:10443/api2/Ticket/search/'
+        f'{TICKET_BASE_URL}/api2/Ticket/search/'
         f'?token={token}&params%5BtypeId%5D=6&params%5Bstatus%5D=1'
     )
     try:
@@ -242,7 +244,7 @@ def get_coordinates_extended(address, geo_cache, geocode_fn=None):
     return None, False, None
 
 
-def process_tickets_to_markers(data, center_point, radius_km, geo_cache, language='de', geo_cache_file=None):
+def process_tickets_to_markers(data, center_point, radius_km, geo_cache, language='de', geo_cache_file=None, ticket_base_url=None):
     """
     Process ticket data into map markers.
     This ALWAYS runs regardless of cache status.
@@ -271,6 +273,8 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
         swallow_exceptions=True
     )
     lang = LANG_TEXT.get(language, LANG_TEXT['de'])
+    if ticket_base_url is None:
+        ticket_base_url = TICKET_BASE_URL
 
     logging.info(f"Processing {len(data)} tickets...")
 
@@ -299,7 +303,7 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
             distance = geodesic(center_point, coords).km
             if distance <= radius_km:
                 # Build ticket URL
-                ticket_url = f"https://tickets.netixx.it:10443/Ticket/view/id/{ticket_id}"
+                ticket_url = html.escape(f"{ticket_base_url}/Ticket/view/id/{ticket_id}")
 
                 # Build popup HTML
                 popup_html = f"""
@@ -313,7 +317,7 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
                         </tr>
                         <tr>
                             <td style="padding:5px; border:1px solid #ccc;">
-                                <a href="{ticket_url}" target="_blank">{ticket_id}</a>
+                                <a href="{ticket_url}" target="_blank">{html.escape(str(ticket_id))}</a>
                             </td>
                             <td style="padding:5px; border:1px solid #ccc;">{html.escape(customer_name)}</td>
                             <td style="padding:5px; border:1px solid #ccc;">{html.escape(address)}</td>
@@ -361,7 +365,7 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
     return markers, warning_list
 
 
-def create_folium_map(markers, warning_list, center_point, language='de'):
+def create_folium_map(markers, warning_list, center_point, language='de', ticket_base_url=None):
     """
     Create Folium map with markers and warning table.
 
@@ -375,6 +379,8 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
         folium.Map object
     """
     lang = LANG_TEXT.get(language, LANG_TEXT['de'])
+    if ticket_base_url is None:
+        ticket_base_url = TICKET_BASE_URL
 
     # Create base map
     m = folium.Map(
@@ -411,9 +417,6 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
         all_coords = [mk['coords'] for mk in markers]
         m.fit_bounds(all_coords, padding=(30, 30))
 
-    # Add layer control
-    folium.LayerControl().add_to(m)
-
     # Add warning table if there are warnings
     if warning_list:
         warning_html = f"""
@@ -445,10 +448,11 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
             else:
                 type_display = lang['not_found_marker']
 
+            w_ticket_url = html.escape(f"{ticket_base_url}/Ticket/view/id/{w['ticket_id']}")
             warning_html += f"""
                 <tr>
                     <td style="padding:5px; border:1px solid #ccc;">
-                        <a href="https://tickets.netixx.it:10443/Ticket/view/id/{html.escape(str(w['ticket_id']))}" target="_blank">{html.escape(str(w['ticket_id']))}</a>
+                        <a href="{w_ticket_url}" target="_blank">{html.escape(str(w['ticket_id']))}</a>
                     </td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['customer_name'])}</td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['address'])}</td>
@@ -533,13 +537,16 @@ def generate_map(config, language='de'):
     logging.info(f"Loaded geo cache with {len(geo_cache)} entries")
 
     # Step 3: ALWAYS process tickets into markers (never skip this step)
+    ticket_base_url = config.get('ticket_base_url', TICKET_BASE_URL)
+    output_map_file = config.get('output_map_file', OUTPUT_MAP_FILE)
     markers, warnings = process_tickets_to_markers(
         data=data,
         center_point=tuple(config['center_point']),
         radius_km=config['radius_km'],
         geo_cache=geo_cache,
         language=language,
-        geo_cache_file=GEO_CACHE_FILE
+        geo_cache_file=GEO_CACHE_FILE,
+        ticket_base_url=ticket_base_url
     )
 
     # Step 4: Save updated geo cache
@@ -552,13 +559,14 @@ def generate_map(config, language='de'):
         markers=markers,
         warning_list=warnings,
         center_point=tuple(config['center_point']),
-        language=language
+        language=language,
+        ticket_base_url=ticket_base_url
     )
 
-    tmp_file = OUTPUT_MAP_FILE + '.tmp'
+    tmp_file = output_map_file + '.tmp'
     map_obj.save(tmp_file)
-    shutil.move(tmp_file, OUTPUT_MAP_FILE)
-    logging.info(f"Map generated successfully: {OUTPUT_MAP_FILE}")
+    shutil.move(tmp_file, output_map_file)
+    logging.info(f"Map generated successfully: {output_map_file}")
     logging.info("=== Map generation complete ===")
 
     return map_obj
@@ -569,7 +577,7 @@ def main():
     parser = argparse.ArgumentParser(description='Generate ticket map')
     parser.add_argument('--language', '-l',
                         choices=['de', 'it', 'en'],
-                        default='de',
+                        default=None,
                         help='Language for map labels')
 
     args = parser.parse_args()
