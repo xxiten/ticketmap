@@ -16,10 +16,9 @@ from datetime import datetime
 # === KONSTANTEN ===
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
-GEO_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'geo_cache.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
 TICKET_BASE_URL = 'https://tickets.netixx.it:10443'
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
@@ -48,7 +47,7 @@ LANG_TEXT = {
         'layer_tickets': "Tickets",
         'fullscreen': "Vollbildmodus",
         'fullscreen_exit': "Vollbild verlassen",
-        'generated_at': "Generiert um",
+        'generated_at': "Generiert am",
         'ticket': "Ticket",
         'customer': "Kunde",
         'address': "Adresse",
@@ -106,20 +105,6 @@ def load_config():
         raise FileNotFoundError(f"Konfigurationsdatei '{CONFIG_FILE}' fehlt.")
 
 
-def load_json_cache(file_path):
-    """Load JSON cache file if it exists."""
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    return {}
-
-
-def save_json_cache(file_path, data):
-    """Save data to JSON cache file."""
-    with open(file_path, 'w') as f:
-        json.dump(data, f, indent=4)
-
-
 def fetch_data_from_api(token):
     """Fetch ticket data from API."""
     token = os.environ.get('TICKETMAP_API_TOKEN', token)
@@ -170,13 +155,12 @@ def extract_city(address):
         return None
 
 
-def get_coordinates_extended(address, geo_cache, geocode_fn=None):
+def get_coordinates_extended(address, geocode_fn=None):
     """
-    Get coordinates for address with caching and fallback logic.
+    Get coordinates for address with fallback logic.
 
     Args:
         address: Street address to geocode
-        geo_cache: Dictionary cache for geocoded addresses
         geocode_fn: Rate-limited geocode callable (Nominatim RateLimiter)
 
     Returns:
@@ -185,29 +169,6 @@ def get_coordinates_extended(address, geo_cache, geocode_fn=None):
             is_approximate: True if only municipality was found
             municipality: Name of municipality if approximate
     """
-    # Check cache first
-    if address in geo_cache:
-        entry = geo_cache[address]
-        # Handle old 2-tuple format (backwards compatibility)
-        if isinstance(entry, (list, tuple)) and len(entry) == 2 and all(isinstance(x, (int, float)) for x in entry):
-            coords = tuple(entry)
-            is_approx = False
-            ortsteil = None
-            # Upgrade cache entry to new format
-            geo_cache[address] = (coords, is_approx, ortsteil)
-            return coords, is_approx, ortsteil
-        # Handle new 3-tuple format
-        elif isinstance(entry, (list, tuple)) and len(entry) == 3:
-            coords, is_approx, ortsteil = entry
-            return coords, is_approx, ortsteil
-
-    # Initialize a default geocode function if not provided
-    if geocode_fn is None:
-        geolocator = Photon(user_agent="street_mapper_idm", timeout=10)
-        geocode_fn = RateLimiter(geolocator.geocode, min_delay_seconds=1,
-                                 max_retries=3, error_wait_seconds=10,
-                                 swallow_exceptions=True)
-
     # Try different address variants
     variants = [
         address + ", South Tyrol, Italy",
@@ -223,7 +184,6 @@ def get_coordinates_extended(address, geo_cache, geocode_fn=None):
             location = None
         if location:
             coords = (location.latitude, location.longitude)
-            geo_cache[address] = (coords, False, None)
             return coords, False, None
 
     # Fallback: Try just the municipality
@@ -236,7 +196,6 @@ def get_coordinates_extended(address, geo_cache, geocode_fn=None):
             location = None
         if location:
             coords = (location.latitude, location.longitude)
-            geo_cache[address] = (coords, True, ortsteil)
             return coords, True, ortsteil
 
     # Complete failure
@@ -244,18 +203,15 @@ def get_coordinates_extended(address, geo_cache, geocode_fn=None):
     return None, False, None
 
 
-def process_tickets_to_markers(data, center_point, radius_km, geo_cache, language='de', geo_cache_file=None, ticket_base_url=None):
+def process_tickets_to_markers(data, center_point, radius_km, language='de', ticket_base_url=None):
     """
     Process ticket data into map markers.
-    This ALWAYS runs regardless of cache status.
 
     Args:
         data: List of ticket dictionaries
         center_point: (lat, lon) tuple for radius center
         radius_km: Radius in kilometers
-        geo_cache: Dictionary cache for geocoded addresses
         language: Language code ('de', 'it', 'en')
-        geo_cache_file: Path to geo cache file for incremental saving
 
     Returns:
         tuple: (markers, warning_list)
@@ -283,21 +239,13 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
         ticket_id = ticket.get('Id', '')
         customer_name = ticket.get('CustomerName', '')
         title = ticket.get('Title', '')
-        status = ticket.get('Status', 'offen')
 
         if not address:
             logging.warning(f"Ticket {ticket_id} has no address, skipping")
             continue
 
-        # Track whether this address is already cached
-        already_cached = address in geo_cache
-
         # Get coordinates
-        coords, is_approx, ortsteil = get_coordinates_extended(address, geo_cache, geocode_fn=geocode)
-
-        # Save geo cache immediately after each new geocoding result
-        if not already_cached and geo_cache_file:
-            save_json_cache(geo_cache_file, geo_cache)
+        coords, is_approx, ortsteil = get_coordinates_extended(address, geocode_fn=geocode)
 
         if coords:
             distance = geodesic(center_point, coords).km
@@ -532,29 +480,20 @@ def generate_map(config, language='de'):
     if not data:
         logging.warning("No ticket data returned from API - map will have no markers")
 
-    # Step 2: Load geo cache (separate from API cache)
-    geo_cache = load_json_cache(GEO_CACHE_FILE)
-    logging.info(f"Loaded geo cache with {len(geo_cache)} entries")
-
-    # Step 3: ALWAYS process tickets into markers (never skip this step)
+    # Step 2: Process tickets into markers (no caching)
     ticket_base_url = config.get('ticket_base_url', TICKET_BASE_URL)
     output_map_file = config.get('output_map_file', OUTPUT_MAP_FILE)
     markers, warnings = process_tickets_to_markers(
         data=data,
         center_point=tuple(config['center_point']),
         radius_km=config['radius_km'],
-        geo_cache=geo_cache,
         language=language,
-        geo_cache_file=GEO_CACHE_FILE,
         ticket_base_url=ticket_base_url
     )
 
-    # Step 4: Save updated geo cache
-    save_json_cache(GEO_CACHE_FILE, geo_cache)
-    logging.info(f"Saved geo cache with {len(geo_cache)} entries")
     logging.info(f"Summary: {len(markers)} markers placed, {len(warnings)} geocoding warnings")
 
-    # Step 5: Generate and save map
+    # Step 3: Generate and save map
     map_obj = create_folium_map(
         markers=markers,
         warning_list=warnings,
