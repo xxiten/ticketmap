@@ -5,13 +5,16 @@ A Python script that fetches open on-site tickets from the Visoma ticketing syst
 ## Features
 
 - Fetches live ticket data from the Visoma API on every run (no stale cache)
-- Geocodes ticket addresses via OpenStreetMap/Nominatim with a persistent local cache (`geo_cache.json`) to avoid redundant lookups
+- Geocodes ticket addresses via **Photon** (Komoot) with a persistent local cache (`geo_cache.json`) to avoid redundant lookups
+- Cache is saved incrementally after each new geocoding result — interrupted runs resume where they left off
 - Three-level geocoding fallback: full address → address with South Tyrol context → municipality only
 - Colour-coded markers by ticket status: red (open), orange (in progress), green (done), black (approximate location)
+- Marker clustering — overlapping markers are grouped and expand on zoom
 - Radius filter — only shows tickets within a configurable distance from a center point
-- Warning panel on the map listing tickets that could not be precisely located
+- Warning table (top-right) listing tickets that could not be precisely located
 - Multilingual UI: German, Italian, English
-- Company logo and generation timestamp displayed on the map
+- Company logo (embedded, no external requests) and generation timestamp displayed top-center on the map
+- Atomic output — map is written to a temp file then moved into place, preventing a corrupt live file on crash
 
 ## Requirements
 
@@ -45,7 +48,7 @@ Edit `config.json`:
 | `api_token` | Visoma API authentication token |
 | `center_point` | `[latitude, longitude]` of the map center / radius origin |
 | `radius_km` | Only show tickets within this radius (km) |
-| `language` | UI language: `de`, `it`, or `en` |
+| `language` | UI language: `de`, `it`, or `en` — can be overridden with `--language` |
 
 ## Usage
 
@@ -59,7 +62,7 @@ python generate.py -l en
 
 | Argument | Description |
 |---|---|
-| `--language`, `-l` | Map UI language (`de` / `it` / `en`), default: `de` |
+| `--language`, `-l` | Map UI language (`de` / `it` / `en`), overrides `config.json` |
 
 ## Files
 
@@ -67,11 +70,11 @@ python generate.py -l en
 |---|---|
 | `generate.py` | Main script |
 | `config.json` | Configuration (API token, center point, radius, language) |
-| `geo_cache.json` | Auto-generated geocoding cache (Nominatim results) |
+| `geo_cache.json` | Auto-generated geocoding cache (Photon results) — safe to delete to force re-geocoding |
 
 ## Notes
 
-- The script respects Nominatim's usage policy by waiting 1 second between geocoding requests.
-- Addresses are only geocoded once and cached permanently in `geo_cache.json`. Delete this file to force re-geocoding.
+- The Photon geocoder (by Komoot) is used instead of the public Nominatim API to avoid rate limiting on bulk geocoding runs.
+- Addresses are geocoded once and cached permanently in `geo_cache.json`. The cache is written after every new entry so progress is never lost on interruption.
 - The API token in `config.json` is sensitive — do not commit it to a public repository.
 
