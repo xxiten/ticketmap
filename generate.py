@@ -5,6 +5,7 @@ import folium
 import logging
 import requests
 import argparse
+import time
 from folium.plugins import Fullscreen
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
@@ -12,7 +13,6 @@ from datetime import datetime
 
 # === KONSTANTEN ===
 CONFIG_FILE = 'config.json'
-CACHE_FILE = 'api_cache.json'
 GEO_CACHE_FILE = 'geo_cache.json'
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
 LOGO_URL = 'https://www.netixx.it/fileadmin/user_upload/Netixx_Logo_rgb_digital.png'
@@ -121,56 +121,6 @@ def fetch_data_from_api(token):
     return []
 
 
-def get_ticket_data(token, use_cache=True, cache_timeout_hours=1):
-    """
-    Fetch ticket data from API with optional caching.
-    Cache only prevents redundant API calls, not processing.
-
-    Args:
-        token: API authentication token
-        use_cache: Whether to use cached data if available
-        cache_timeout_hours: How long cached data is valid (in hours)
-
-    Returns:
-        list of ticket dictionaries
-    """
-    cache = load_json_cache(CACHE_FILE)
-
-    # Check if cache is valid and not expired
-    if use_cache and cache:
-        cache_time = cache.get('timestamp')
-        if not cache_time:
-            logging.debug("Cache exists but has no timestamp")
-        else:
-            try:
-                cache_age_hours = (datetime.now() - datetime.fromisoformat(cache_time)).total_seconds() / 3600
-                if cache_age_hours < cache_timeout_hours:
-                    logging.info(f"Using cached API data (age: {cache_age_hours:.1f}h)")
-                    return cache.get('data', [])
-                else:
-                    logging.info(f"Cache expired (age: {cache_age_hours:.1f}h)")
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Invalid cache timestamp: {e}")
-
-    # Fetch fresh data from API
-    logging.info("Fetching fresh data from API...")
-    data = fetch_data_from_api(token)
-
-    # If API returns empty data but we have cached data, preserve the old cache
-    if not data and cache:
-        logging.info("API returned no data, preserving previous cache")
-        return cache.get('data', [])
-    
-    # Save to cache with timestamp
-    cache = {
-        'timestamp': datetime.now().isoformat(),
-        'data': data
-    }
-    save_json_cache(CACHE_FILE, cache)
-
-    logging.info(f"Fetched {len(data)} tickets from API")
-    return data
-
 
 def normalize_status(status):
     """Normalize status string to standard format."""
@@ -246,6 +196,7 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     for variant in variants:
         try:
             location = geolocator.geocode(variant, timeout=5)
+            time.sleep(1)
             if location:
                 coords = (location.latitude, location.longitude)
                 geo_cache[address] = (coords, False, None)
@@ -258,6 +209,7 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     if ortsteil:
         try:
             location = geolocator.geocode(f"{ortsteil}, South Tyrol, Italy", timeout=5)
+            time.sleep(1)
             if location:
                 coords = (location.latitude, location.longitude)
                 geo_cache[address] = (coords, True, ortsteil)
@@ -450,10 +402,10 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
 
             warning_html += f"""
                 <tr>
-                    <td style="padding:5px; border:1px solid #ccc;">{w['ticket_id']}</td>
+                    <td style="padding:5px; border:1px solid #ccc;">{html.escape(str(w['ticket_id']))}</td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['customer_name'])}</td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['address'])}</td>
-                    <td style="padding:5px; border:1px solid #ccc;">{type_display}</td>
+                    <td style="padding:5px; border:1px solid #ccc;">{html.escape(type_display)}</td>
                 </tr>
             """
 
@@ -487,29 +439,24 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
     return m
 
 
-def generate_map(config, language='de', cache_timeout_hours=1):
+def generate_map(config, language='de'):
     """
     Main function - orchestrates the complete workflow.
 
     Args:
         config: Configuration dictionary
         language: Language code ('de', 'it', 'en')
-        cache_timeout_hours: How long API cache is valid
 
     Returns:
         folium.Map object
     """
     logging.info("=== Starting map generation ===")
 
-    # Step 1: Get ticket data (cached or fresh)
-    data = get_ticket_data(
-        token=config['api_token'],
-        use_cache=config.get('use_cache', True),
-        cache_timeout_hours=cache_timeout_hours
-    )
+    # Step 1: Fetch ticket data from API
+    data = fetch_data_from_api(token=config['api_token'])
 
     if not data:
-        logging.warning("No new ticket data from API - using cached data or generating map with no markers")
+        logging.warning("No ticket data returned from API - map will have no markers")
 
     # Step 2: Load geo cache (separate from API cache)
     geo_cache = load_json_cache(GEO_CACHE_FILE)
@@ -531,7 +478,7 @@ def generate_map(config, language='de', cache_timeout_hours=1):
     # Step 5: Generate and save map
     map_obj = create_folium_map(
         markers=markers,
-        warnings=warnings,
+        warning_list=warnings,
         center_point=tuple(config['center_point']),
         language=language
     )
@@ -546,32 +493,20 @@ def generate_map(config, language='de', cache_timeout_hours=1):
 def main():
     """Main entry point with argument parsing."""
     parser = argparse.ArgumentParser(description='Generate ticket map')
-    parser.add_argument('--language', '-l', 
-                        choices=['de', 'it', 'en'], 
+    parser.add_argument('--language', '-l',
+                        choices=['de', 'it', 'en'],
                         default='de',
                         help='Language for map labels')
-    parser.add_argument('--cache-timeout', '-t',
-                        type=float,
-                        default=1.0,
-                        help='API cache timeout in hours (default: 1.0)')
-    parser.add_argument('--no-cache',
-                        action='store_true',
-                        help='Disable API cache and force fresh fetch')
 
     args = parser.parse_args()
 
     # Load configuration
     config = load_config()
 
-    # Override cache setting if --no-cache flag is used
-    if args.no_cache:
-        config['use_cache'] = False
-
     # Generate map
     generate_map(
         config=config,
-        language=args.language,
-        cache_timeout_hours=args.cache_timeout
+        language=args.language
     )
 
 
