@@ -1,12 +1,14 @@
 import os
 import json
 import html
+import shutil
+import tempfile
 import folium
 import logging
 import requests
 import argparse
 import time
-from folium.plugins import Fullscreen
+from folium.plugins import Fullscreen, MarkerCluster
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 from datetime import datetime
@@ -196,8 +198,8 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
 
     for variant in variants:
         try:
-            location = geolocator.geocode(variant, timeout=5)
             time.sleep(1)
+            location = geolocator.geocode(variant, timeout=5)
             if location:
                 coords = (location.latitude, location.longitude)
                 geo_cache[address] = (coords, False, None)
@@ -209,8 +211,8 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     ortsteil = extract_city(address)
     if ortsteil:
         try:
-            location = geolocator.geocode(f"{ortsteil}, South Tyrol, Italy", timeout=5)
             time.sleep(1)
+            location = geolocator.geocode(f"{ortsteil}, South Tyrol, Italy", timeout=5)
             if location:
                 coords = (location.latitude, location.longitude)
                 geo_cache[address] = (coords, True, ortsteil)
@@ -253,6 +255,10 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
         customer_name = ticket.get('CustomerName', '')
         title = ticket.get('Title', '')
         status = ticket.get('Status', 'offen')
+
+        if not address:
+            logging.warning(f"Ticket {ticket_id} has no address, skipping")
+            continue
 
         # Get coordinates
         coords, is_approx, ortsteil = get_coordinates_extended(address, geo_cache, geolocator=geolocator)
@@ -353,8 +359,9 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
         force_separate_button=True
     ).add_to(m)
 
-    # Create feature group for markers
+    # Create feature group with clustering for markers
     ticket_layer = folium.FeatureGroup(name=lang['layer_tickets'])
+    cluster = MarkerCluster().add_to(ticket_layer)
 
     # Add markers to map
     for marker in markers:
@@ -363,7 +370,7 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
             popup=folium.Popup(marker['popup'], max_width=MAP_POPUP_MAX_WIDTH),
             tooltip=marker['tooltip'],
             icon=folium.Icon(color=marker['color'], icon='info-sign')
-        ).add_to(ticket_layer)
+        ).add_to(cluster)
 
     ticket_layer.add_to(m)
 
@@ -475,6 +482,7 @@ def generate_map(config, language='de'):
     # Step 4: Save updated geo cache
     save_json_cache(GEO_CACHE_FILE, geo_cache)
     logging.info(f"Saved geo cache with {len(geo_cache)} entries")
+    logging.info(f"Summary: {len(markers)} markers placed, {len(warnings)} geocoding warnings")
 
     # Step 5: Generate and save map
     map_obj = create_folium_map(
@@ -484,7 +492,9 @@ def generate_map(config, language='de'):
         language=language
     )
 
-    map_obj.save(OUTPUT_MAP_FILE)
+    tmp_file = OUTPUT_MAP_FILE + '.tmp'
+    map_obj.save(tmp_file)
+    shutil.move(tmp_file, OUTPUT_MAP_FILE)
     logging.info(f"Map generated successfully: {OUTPUT_MAP_FILE}")
     logging.info("=== Map generation complete ===")
 
@@ -505,9 +515,10 @@ def main():
     config = load_config()
 
     # Generate map
+    language = args.language or config.get('language', 'de')
     generate_map(
         config=config,
-        language=args.language
+        language=language
     )
 
 
