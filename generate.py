@@ -1,17 +1,16 @@
 import os
 import json
 import html
+import base64
 import shutil
-import tempfile
 import folium
 import logging
 import requests
 import argparse
-import time
 from folium.plugins import Fullscreen, MarkerCluster
-from geopy.geocoders import Nominatim
+from geopy.geocoders import Nominatim, Photon
 from geopy.distance import geodesic
-from geopy.exc import GeocoderRateLimited
+from geopy.extra.rate_limiter import RateLimiter
 from datetime import datetime
 
 # === KONSTANTEN ===
@@ -19,7 +18,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
 GEO_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'geo_cache.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
-LOGO_URL = 'https://www.netixx.it/fileadmin/user_upload/Netixx_Logo_rgb_digital.png'
+LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
     "offen": "red",
@@ -80,6 +79,19 @@ LANG_TEXT = {
         'type': "Type"
     }
 }
+
+
+def fetch_logo_as_base64(url):
+    """Fetch logo image and return as base64 data URL for embedding in HTML."""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        mime = response.headers.get('Content-Type', 'image/png').split(';')[0]
+        data = base64.b64encode(response.content).decode('utf-8')
+        return f"data:{mime};base64,{data}"
+    except Exception as e:
+        logging.warning(f"Logo konnte nicht geladen werden: {e}")
+        return url  # fall back to remote URL
 
 
 def load_config():
@@ -155,32 +167,14 @@ def extract_city(address):
         return None
 
 
-def _geocode_with_backoff(geolocator, query, max_retries=3):
-    """Call geolocator.geocode with rate-limit backoff. Returns location or None."""
-    delay = 2
-    for attempt in range(max_retries):
-        try:
-            time.sleep(1)
-            return geolocator.geocode(query, timeout=10)
-        except GeocoderRateLimited:
-            logging.warning(f"Rate limited by Nominatim, backing off {delay}s (attempt {attempt + 1}/{max_retries})")
-            time.sleep(delay)
-            delay *= 2
-        except Exception as e:
-            logging.warning(f"Geocoding-Fehler für '{query}': {type(e).__name__}: {e}")
-            return None
-    logging.error(f"Geocoding failed after {max_retries} attempts for '{query}'")
-    return None
-
-
-def get_coordinates_extended(address, geo_cache, geolocator=None):
+def get_coordinates_extended(address, geo_cache, geocode_fn=None):
     """
     Get coordinates for address with caching and fallback logic.
 
     Args:
         address: Street address to geocode
         geo_cache: Dictionary cache for geocoded addresses
-        geolocator: Nominatim geolocator instance
+        geocode_fn: Rate-limited geocode callable (Nominatim RateLimiter)
 
     Returns:
         tuple: (coords, is_approximate, municipality)
@@ -204,9 +198,12 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
             coords, is_approx, ortsteil = entry
             return coords, is_approx, ortsteil
 
-    # Initialize geolocator if not provided
-    if geolocator is None:
-        geolocator = Nominatim(user_agent="street_mapper_idm")
+    # Initialize a default geocode function if not provided
+    if geocode_fn is None:
+        geolocator = Photon(user_agent="street_mapper_idm", timeout=10)
+        geocode_fn = RateLimiter(geolocator.geocode, min_delay_seconds=1,
+                                 max_retries=3, error_wait_seconds=10,
+                                 swallow_exceptions=True)
 
     # Try different address variants
     variants = [
@@ -216,7 +213,11 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     ]
 
     for variant in variants:
-        location = _geocode_with_backoff(geolocator, variant)
+        try:
+            location = geocode_fn(variant)
+        except Exception as e:
+            logging.warning(f"Geocoding-Fehler für '{variant}': {type(e).__name__}: {e}")
+            location = None
         if location:
             coords = (location.latitude, location.longitude)
             geo_cache[address] = (coords, False, None)
@@ -225,7 +226,11 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     # Fallback: Try just the municipality
     ortsteil = extract_city(address)
     if ortsteil:
-        location = _geocode_with_backoff(geolocator, f"{ortsteil}, South Tyrol, Italy")
+        try:
+            location = geocode_fn(f"{ortsteil}, South Tyrol, Italy")
+        except Exception as e:
+            logging.warning(f"Geocoding-Fehler für Gemeinde '{ortsteil}': {type(e).__name__}: {e}")
+            location = None
         if location:
             coords = (location.latitude, location.longitude)
             geo_cache[address] = (coords, True, ortsteil)
@@ -236,7 +241,7 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     return None, False, None
 
 
-def process_tickets_to_markers(data, center_point, radius_km, geo_cache, language='de'):
+def process_tickets_to_markers(data, center_point, radius_km, geo_cache, language='de', geo_cache_file=None):
     """
     Process ticket data into map markers.
     This ALWAYS runs regardless of cache status.
@@ -247,6 +252,7 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
         radius_km: Radius in kilometers
         geo_cache: Dictionary cache for geocoded addresses
         language: Language code ('de', 'it', 'en')
+        geo_cache_file: Path to geo cache file for incremental saving
 
     Returns:
         tuple: (markers, warning_list)
@@ -255,7 +261,14 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
     """
     markers = []
     warning_list = []
-    geolocator = Nominatim(user_agent="street_mapper_idm")
+    geolocator = Photon(user_agent="street_mapper_idm", timeout=10)
+    geocode = RateLimiter(
+        geolocator.geocode,
+        min_delay_seconds=1,
+        max_retries=3,
+        error_wait_seconds=10,
+        swallow_exceptions=True
+    )
     lang = LANG_TEXT.get(language, LANG_TEXT['de'])
 
     logging.info(f"Processing {len(data)} tickets...")
@@ -271,8 +284,15 @@ def process_tickets_to_markers(data, center_point, radius_km, geo_cache, languag
             logging.warning(f"Ticket {ticket_id} has no address, skipping")
             continue
 
+        # Track whether this address is already cached
+        already_cached = address in geo_cache
+
         # Get coordinates
-        coords, is_approx, ortsteil = get_coordinates_extended(address, geo_cache, geolocator=geolocator)
+        coords, is_approx, ortsteil = get_coordinates_extended(address, geo_cache, geocode_fn=geocode)
+
+        # Save geo cache immediately after each new geocoding result
+        if not already_cached and geo_cache_file:
+            save_json_cache(geo_cache_file, geo_cache)
 
         if coords:
             distance = geodesic(center_point, coords).km
@@ -392,8 +412,8 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
     if warning_list:
         warning_html = f"""
         <div style="position: fixed; 
-                    bottom: 20px; 
-                    left: 20px; 
+                    top: 20px; 
+                    right: 20px; 
                     width: 500px; 
                     max-height: 300px;
                     background: white; 
@@ -437,17 +457,19 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
 
     # Add logo and timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logo_src = fetch_logo_as_base64(LOGO_URL)
     logo_html = f"""
     <div style="position: fixed; 
                 top: 10px; 
-                right: 10px; 
+                left: 50%; 
+                transform: translateX(-50%);
                 background: white; 
                 padding: 10px; 
                 border: 2px solid #ccc; 
                 border-radius: 5px;
                 z-index: 9999;
                 box-shadow: 0 0 10px rgba(0,0,0,0.3);">
-        <img src="{LOGO_URL}" style="height:40px;">
+        <img src="{logo_src}" style="height:40px;">
         <div style="font-size:10px; margin-top:5px; text-align:center;">
             {lang['generated_at']}: {timestamp}
         </div>
@@ -487,7 +509,8 @@ def generate_map(config, language='de'):
         center_point=tuple(config['center_point']),
         radius_km=config['radius_km'],
         geo_cache=geo_cache,
-        language=language
+        language=language,
+        geo_cache_file=GEO_CACHE_FILE
     )
 
     # Step 4: Save updated geo cache
