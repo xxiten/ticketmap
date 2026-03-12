@@ -1,6 +1,6 @@
 # ticketmap
 
-A Python script that fetches open on-site tickets from the Visoma ticketing system and renders them as an interactive geographical map using Folium/Leaflet. The map is saved to `/var/www/html/index.html` for web serving.
+A Python script that fetches open on-site tickets from the Visoma ticketing system and renders them as an interactive geographical map using Folium/Leaflet. The output path is configurable via `config.json` (default: `/var/www/html/index.html`).
 
 ## Features
 
@@ -39,16 +39,20 @@ Edit `config.json`:
     "api_token": "YOUR_API_TOKEN",
     "center_point": [46.4983, 11.3547],
     "radius_km": 120,
-    "language": "de"
+    "language": "de",
+    "output_map_file": "/var/www/html/index.html",
+    "ticket_base_url": "https://your-ticketing-instance.example.com"
 }
 ```
 
 | Key | Description |
 |---|---|
-| `api_token` | Visoma API authentication token |
+| `api_token` | Visoma API authentication token (can be overridden by the `TICKETMAP_API_TOKEN` environment variable) |
 | `center_point` | `[latitude, longitude]` of the map center / radius origin |
 | `radius_km` | Only show tickets within this radius (km) |
 | `language` | UI language: `de`, `it`, or `en` — can be overridden with `--language` |
+| `output_map_file` | Path where the generated HTML map is saved |
+| `ticket_base_url` | Base URL of the Visoma instance (used for ticket links in the map) |
 
 ## Usage
 
@@ -69,12 +73,12 @@ python generate.py -l en
 | File | Description |
 |---|---|
 | `generate.py` | Main script |
-| `config.json` | Configuration (API token, center point, radius, language) |
+| `config.json` | Configuration (API token, center point, radius, language, output path, ticket base URL) |
 | `geo_cache.json` | Auto-generated geocoding cache (Photon results) — safe to delete to force re-geocoding |
 
 ## Notes
 
 - The Photon geocoder (by Komoot) is used instead of the public Nominatim API to avoid rate limiting on bulk geocoding runs.
 - Addresses are geocoded once and cached permanently in `geo_cache.json`. The cache is written after every new entry so progress is never lost on interruption.
-- The API token in `config.json` is sensitive — do not commit it to a public repository.
+- The API token in `config.json` is sensitive — do not commit it to a public repository. As an alternative, set the `TICKETMAP_API_TOKEN` environment variable, which takes precedence over the config file value.
 
