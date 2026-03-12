@@ -405,6 +405,11 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
 
     ticket_layer.add_to(m)
 
+    # Auto-fit map to show all markers
+    if markers:
+        all_coords = [m['coords'] for m in markers]
+        m.fit_bounds(all_coords, padding=(30, 30))
+
     # Add layer control
     folium.LayerControl().add_to(m)
 
@@ -441,7 +446,9 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
 
             warning_html += f"""
                 <tr>
-                    <td style="padding:5px; border:1px solid #ccc;">{html.escape(str(w['ticket_id']))}</td>
+                    <td style="padding:5px; border:1px solid #ccc;">
+                        <a href="https://tickets.netixx.it:10443/Ticket/view/id/{html.escape(str(w['ticket_id']))}" target="_blank">{html.escape(str(w['ticket_id']))}</a>
+                    </td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['customer_name'])}</td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(w['address'])}</td>
                     <td style="padding:5px; border:1px solid #ccc;">{html.escape(type_display)}</td>
@@ -469,7 +476,7 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
                 border-radius: 5px;
                 z-index: 9999;
                 box-shadow: 0 0 10px rgba(0,0,0,0.3);">
-        <img src="{logo_src}" style="height:40px;">
+        <img src="{logo_src}" style="height:40px; display:block; margin:0 auto;">
         <div style="font-size:10px; margin-top:5px; text-align:center;">
             {lang['generated_at']}: {timestamp}
         </div>
