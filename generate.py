@@ -468,7 +468,7 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
         m.get_root().html.add_child(folium.Element(warning_html))
 
     # Add logo and timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     logo_src = fetch_logo_as_base64(LOGO_URL)
     logo_html = f"""
     <div style="position: fixed; 
