@@ -11,6 +11,7 @@ import time
 from folium.plugins import Fullscreen, MarkerCluster
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
+from geopy.exc import GeocoderRateLimited
 from datetime import datetime
 
 # === KONSTANTEN ===
@@ -154,6 +155,24 @@ def extract_city(address):
         return None
 
 
+def _geocode_with_backoff(geolocator, query, max_retries=3):
+    """Call geolocator.geocode with rate-limit backoff. Returns location or None."""
+    delay = 2
+    for attempt in range(max_retries):
+        try:
+            time.sleep(1)
+            return geolocator.geocode(query, timeout=10)
+        except GeocoderRateLimited:
+            logging.warning(f"Rate limited by Nominatim, backing off {delay}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(delay)
+            delay *= 2
+        except Exception as e:
+            logging.warning(f"Geocoding-Fehler für '{query}': {type(e).__name__}: {e}")
+            return None
+    logging.error(f"Geocoding failed after {max_retries} attempts for '{query}'")
+    return None
+
+
 def get_coordinates_extended(address, geo_cache, geolocator=None):
     """
     Get coordinates for address with caching and fallback logic.
@@ -197,28 +216,20 @@ def get_coordinates_extended(address, geo_cache, geolocator=None):
     ]
 
     for variant in variants:
-        try:
-            time.sleep(1)
-            location = geolocator.geocode(variant, timeout=5)
-            if location:
-                coords = (location.latitude, location.longitude)
-                geo_cache[address] = (coords, False, None)
-                return coords, False, None
-        except Exception as e:
-            logging.warning(f"Geocoding-Fehler für '{variant}': {type(e).__name__}: {e}")
+        location = _geocode_with_backoff(geolocator, variant)
+        if location:
+            coords = (location.latitude, location.longitude)
+            geo_cache[address] = (coords, False, None)
+            return coords, False, None
 
     # Fallback: Try just the municipality
     ortsteil = extract_city(address)
     if ortsteil:
-        try:
-            time.sleep(1)
-            location = geolocator.geocode(f"{ortsteil}, South Tyrol, Italy", timeout=5)
-            if location:
-                coords = (location.latitude, location.longitude)
-                geo_cache[address] = (coords, True, ortsteil)
-                return coords, True, ortsteil
-        except Exception as e:
-            logging.warning(f"Geocoding-Fehler für Gemeinde '{ortsteil}': {type(e).__name__}: {e}")
+        location = _geocode_with_backoff(geolocator, f"{ortsteil}, South Tyrol, Italy")
+        if location:
+            coords = (location.latitude, location.longitude)
+            geo_cache[address] = (coords, True, ortsteil)
+            return coords, True, ortsteil
 
     # Complete failure
     logging.warning(f"Adresse konnte nicht geocodiert werden: {address}")
