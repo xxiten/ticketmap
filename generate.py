@@ -18,6 +18,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
 GEO_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'geo_cache.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
+VERSION = '1.0.0'
 LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
@@ -407,7 +408,7 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
 
     # Auto-fit map to show all markers
     if markers:
-        all_coords = [m['coords'] for m in markers]
+        all_coords = [mk['coords'] for mk in markers]
         m.fit_bounds(all_coords, padding=(30, 30))
 
     # Add layer control
@@ -470,19 +471,40 @@ def create_folium_map(markers, warning_list, center_point, language='de'):
                 top: 10px; 
                 left: 50%; 
                 transform: translateX(-50%);
+                z-index: 9999;">
+        <img src="{logo_src}" style="height:90px; display:block; mix-blend-mode:multiply;">
+    </div>
+    <div style="position: fixed; 
+                bottom: 10px; 
+                left: 50%; 
+                transform: translateX(-50%);
                 background: white; 
-                padding: 10px; 
+                padding: 6px 12px; 
                 border: 2px solid #ccc; 
                 border-radius: 5px;
                 z-index: 9999;
+                font-size:11px;
                 box-shadow: 0 0 10px rgba(0,0,0,0.3);">
-        <img src="{logo_src}" style="height:40px; display:block; margin:0 auto;">
-        <div style="font-size:10px; margin-top:5px; text-align:center;">
-            {lang['generated_at']}: {timestamp}
-        </div>
+        {lang['generated_at']}: {timestamp}
     </div>
     """
     m.get_root().html.add_child(folium.Element(logo_html))
+
+    info_html = f"""
+    <div style="position: fixed;
+                bottom: 10px;
+                left: 10px;
+                background: white;
+                padding: 6px 12px;
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                z-index: 9999;
+                font-size: 11px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.3);">
+        v{VERSION} &mdash; Created for the people by <a href="https://www.netixx.it" target="_blank">www.netixx.it</a>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(info_html))
 
     return m
 
