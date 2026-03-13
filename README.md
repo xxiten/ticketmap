@@ -6,13 +6,19 @@ A Python script that fetches open on-site tickets from the Visoma ticketing syst
 
 - Fetches live ticket data from the Visoma API on every run (no stale cache)
 - Geocodes ticket addresses via **Photon** (Komoot) with three-level fallback: full address → address with South Tyrol context → municipality only
-- Colour-coded markers by ticket status: red (open), orange (in progress), green (done), black (approximate location)
-- Marker clustering — overlapping markers are grouped and expand on zoom
+- Colour-coded markers by ticket age and location accuracy:
+  - **Blue** — open ticket, within 30 days
+  - **Dark red** — open ticket older than 30 days ("stinkend")
+  - **Black** — approximate location, only municipality could be resolved
 - Radius filter — only shows tickets within a configurable distance from a center point
-- Warning table (top-right) listing tickets that could not be precisely located
+- Popup info card per marker (vertical layout): ticket ID (linked), customer, address, ToDo, creation date — overdue tickets are highlighted in red in the popup
+- Warning table (top-right, collapsible) listing tickets that could not be precisely located
+- Counter box (bottom-right) showing total open tickets and overdue count
+- Fullscreen button
 - Multilingual UI: German, Italian, English
-- Company logo (embedded, no external requests) and generation timestamp displayed top-center on the map
+- Company logo (embedded, no external requests) and generation timestamp displayed on the map
 - Atomic output — map is written to a temp file then moved into place, preventing a corrupt live file on crash
+- 🦖 Godzilla roams the map along real streets at 250 km/h (via OSRM routing)
 
 ## Requirements
 
@@ -77,4 +83,6 @@ python generate.py -l en
 
 - The Photon geocoder (by Komoot) is used instead of the public Nominatim API to avoid rate limiting on bulk geocoding runs.
 - The API token in `config.json` is sensitive — do not commit it to a public repository. As an alternative, set the `TICKETMAP_API_TOKEN` environment variable, which takes precedence over the config file value.
+- The overdue threshold is controlled by the `OVERDUE_DAYS` constant in `generate.py` (default: 30 days).
+- Godzilla uses the public OSRM routing API (`router.project-osrm.org`) — no API key required.
 

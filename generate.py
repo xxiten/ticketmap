@@ -7,11 +7,11 @@ import folium
 import logging
 import requests
 import argparse
-from folium.plugins import Fullscreen, MarkerCluster
+from folium.plugins import Fullscreen
 from geopy.geocoders import Photon
 from geopy.distance import geodesic
 from geopy.extra.rate_limiter import RateLimiter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # === KONSTANTEN ===
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,12 +22,14 @@ VERSION = '1.0.2'
 LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
-    "offen": "red",
+    "offen": "blue",
     "in bearbeitung": "orange",
     "erledigt": "green"
 }
 DEFAULT_MARKER_COLOR = "blue"
 APPROXIMATE_MARKER_COLOR = "black"
+OVERDUE_MARKER_COLOR = "darkred"
+OVERDUE_DAYS = 30
 
 # === MAP CONFIGURATION ===
 MAP_DEFAULT_ZOOM = 11
@@ -44,40 +46,43 @@ LANG_TEXT = {
         'warning_head': "Achtung: Folgende Tickets konnten nicht exakt lokalisiert werden:",
         'approx_marker': "(nur Gemeinde lokalisiert)",
         'not_found_marker': "(keine Lokalisierung möglich)",
-        'layer_tickets': "Tickets",
         'fullscreen': "Vollbildmodus",
         'fullscreen_exit': "Vollbild verlassen",
         'generated_at': "Generiert am",
         'ticket': "Ticket",
         'customer': "Kunde",
         'address': "Adresse",
-        'type': "Art"
+        'type': "ToDo",
+        'created': "Erstellt",
+        'overdue': "älter als 30 Tage"
     },
     'it': {
         'warning_head': "Attenzione: I seguenti Ticket non sono stati localizzati esattamente:",
         'approx_marker': "(solo il comune localizzato)",
         'not_found_marker': "(localizzazione non riuscita)",
-        'layer_tickets': "Ticket",
         'fullscreen': "Schermo intero",
         'fullscreen_exit': "Esci da schermo intero",
         'generated_at': "Generato alle",
         'ticket': "Ticket",
         'customer': "Cliente",
         'address': "Indirizzo",
-        'type': "Tipo"
+        'type': "ToDo",
+        'created': "Creato",
+        'overdue': "più di 30 giorni"
     },
     'en': {
         'warning_head': "Warning: The following Tickets could not be located exactly:",
         'approx_marker': "(only municipality found)",
         'not_found_marker': "(location failed)",
-        'layer_tickets': "Tickets",
         'fullscreen': "Fullscreen",
         'fullscreen_exit': "Exit Fullscreen",
         'generated_at': "Generated at",
         'ticket': "Ticket",
         'customer': "Customer",
         'address': "Address",
-        'type': "Type"
+        'type': "ToDo",
+        'created': "Created",
+        'overdue': "older than 30 days"
     }
 }
 
@@ -138,10 +143,23 @@ def normalize_status(status):
     return None
 
 
+def is_ticket_overdue(created_str):
+    """Return True if ticket was created more than OVERDUE_DAYS days ago."""
+    if not created_str:
+        return False
+    try:
+        created = datetime.strptime(created_str, "%Y-%m-%d %H:%M:%S")
+        return (datetime.now() - created) > timedelta(days=OVERDUE_DAYS)
+    except ValueError:
+        return False
+
+
 def get_marker_color(ticket, is_approximate=False):
-    """Determine marker color based on ticket status and location accuracy."""
+    """Determine marker color based on ticket age and location accuracy."""
     if is_approximate:
         return APPROXIMATE_MARKER_COLOR
+    if is_ticket_overdue(ticket.get("Created", "")):
+        return OVERDUE_MARKER_COLOR
     status = ticket.get("Status", "").strip()
     key = normalize_status(status)
     return STATUS_COLOR.get(key, DEFAULT_MARKER_COLOR)
@@ -239,6 +257,7 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
         ticket_id = ticket.get('Id', '')
         customer_name = ticket.get('CustomerName', '')
         title = ticket.get('Title', '')
+        created_str = ticket.get('Created', '')
 
         if not address:
             logging.warning(f"Ticket {ticket_id} has no address, skipping")
@@ -254,22 +273,32 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
                 ticket_url = html.escape(f"{ticket_base_url}/Ticket/view/id/{ticket_id}")
 
                 # Build popup HTML
+                overdue = is_ticket_overdue(created_str)
+                created_display = html.escape(created_str[:10]) if created_str else ''
+                created_cell_style = "padding:5px 8px; border:1px solid #ccc; color:#c0392b; font-weight:bold;" if overdue else "padding:5px 8px; border:1px solid #ccc;"
+                overdue_label = f" ⚠ {lang['overdue']}" if overdue else ''
                 popup_html = f"""
-                <div style="width:300px;">
+                <div style="width:320px; font-size:13px;">
                     <table style="width:100%; border-collapse:collapse;">
-                        <tr style="background:#f0f0f0; font-weight:bold;">
-                            <td style="padding:5px; border:1px solid #ccc;">{lang['ticket']}</td>
-                            <td style="padding:5px; border:1px solid #ccc;">{lang['customer']}</td>
-                            <td style="padding:5px; border:1px solid #ccc;">{lang['address']}</td>
-                            <td style="padding:5px; border:1px solid #ccc;">{lang['type']}</td>
+                        <tr>
+                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap; width:1%;">{lang['ticket']}</td>
+                            <td style="padding:5px 8px; border:1px solid #ccc;"><a href="{ticket_url}" target="_blank">{html.escape(str(ticket_id))}</a></td>
                         </tr>
                         <tr>
-                            <td style="padding:5px; border:1px solid #ccc;">
-                                <a href="{ticket_url}" target="_blank">{html.escape(str(ticket_id))}</a>
-                            </td>
-                            <td style="padding:5px; border:1px solid #ccc;">{html.escape(customer_name)}</td>
-                            <td style="padding:5px; border:1px solid #ccc;">{html.escape(address)}</td>
-                            <td style="padding:5px; border:1px solid #ccc;">{html.escape(title)}</td>
+                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['customer']}</td>
+                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(customer_name)}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['address']}</td>
+                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(address)}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['type']}</td>
+                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(title)}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['created']}</td>
+                            <td style="{created_cell_style}">{created_display}{overdue_label}</td>
                         </tr>
                     </table>
                 </div>
@@ -345,10 +374,6 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
         force_separate_button=True
     ).add_to(m)
 
-    # Create feature group with clustering for markers
-    ticket_layer = folium.FeatureGroup(name=lang['layer_tickets'])
-    cluster = MarkerCluster().add_to(ticket_layer)
-
     # Add markers to map
     for marker in markers:
         folium.Marker(
@@ -356,9 +381,7 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
             popup=folium.Popup(marker['popup'], max_width=MAP_POPUP_MAX_WIDTH),
             tooltip=marker['tooltip'],
             icon=folium.Icon(color=marker['color'], icon='info-sign')
-        ).add_to(cluster)
-
-    ticket_layer.add_to(m)
+        ).add_to(m)
 
     # Auto-fit map to show all markers
     if markers:
@@ -457,6 +480,128 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
     </div>
     """
     m.get_root().html.add_child(folium.Element(info_html))
+
+    overdue_count = sum(1 for mk in markers if mk['color'] == OVERDUE_MARKER_COLOR)
+    counter_html = f"""
+    <div style="position: fixed;
+                bottom: 10px;
+                right: 10px;
+                background: white;
+                padding: 6px 12px;
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                z-index: 9999;
+                font-size: 11px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.3);">
+        Offene Tickets: <strong>{len(markers)}</strong><br>
+        Stinkende Tickets: <strong style="color:#c0392b;">{overdue_count}</strong>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(counter_html))
+
+    godzilla_html = f"""
+    <script>
+    (function() {{
+        var CENTER    = [{center_point[0]}, {center_point[1]}];
+        var SPREAD    = 0.25;
+        var SPEED_KMH = 250;
+        var M_PER_LAT = 111000;
+        var M_PER_LON = 111000 * Math.cos(46.9 * Math.PI / 180);
+        var FPS       = 60;
+        var M_PER_FRAME = SPEED_KMH * 1000 / 3600 / FPS;
+
+        function getMap() {{
+            var keys = Object.keys(window);
+            for (var i = 0; i < keys.length; i++) {{
+                try {{
+                    var o = window[keys[i]];
+                    if (o && o._leaflet_id && typeof o.latLngToContainerPoint === 'function') return o;
+                }} catch(e) {{}}
+            }}
+            return null;
+        }}
+
+        function randomPoint() {{
+            return [
+                CENTER[0] + (Math.random() - 0.5) * SPREAD * 2,
+                CENTER[1] + (Math.random() - 0.5) * SPREAD * 2
+            ];
+        }}
+
+        function segDist(a, b) {{
+            var dlat = (b[1] - a[1]) * M_PER_LAT;
+            var dlon = (b[0] - a[0]) * M_PER_LON;
+            return Math.sqrt(dlat*dlat + dlon*dlon);
+        }}
+
+        function fetchRoute(from, to, cb) {{
+            var url = 'https://router.project-osrm.org/route/v1/driving/' +
+                from[1] + ',' + from[0] + ';' + to[1] + ',' + to[0] +
+                '?overview=full&geometries=geojson';
+            fetch(url)
+                .then(function(r) {{ return r.json(); }})
+                .then(function(d) {{
+                    if (d.routes && d.routes[0]) cb(d.routes[0].geometry.coordinates);
+                    else cb(null);
+                }})
+                .catch(function() {{ cb(null); }});
+        }}
+
+        var el = document.createElement('div');
+        el.style.cssText = 'position:fixed;font-size:36px;z-index:9998;pointer-events:none;transform:translate(-50%,-100%);line-height:1;';
+        el.textContent = '🦖';
+        document.body.appendChild(el);
+
+        var pos = randomPoint(), route = [], seg = 0, t = 0;
+
+        function place() {{
+            var map = getMap();
+            if (!map || !pos) return;
+            var p = map.latLngToContainerPoint(pos);
+            var r = map.getContainer().getBoundingClientRect();
+            el.style.left = (r.left + p.x) + 'px';
+            el.style.top  = (r.top  + p.y) + 'px';
+        }}
+
+        function step() {{
+            if (!route.length || seg >= route.length - 1) {{ next(); return; }}
+            var a = route[seg], b = route[seg + 1];
+            el.style.transform = 'translate(-50%,-100%) scaleX(' + (b[0] >= a[0] ? 1 : -1) + ')';
+            var dist = segDist(a, b);
+            t += dist > 0 ? M_PER_FRAME / dist : 1;
+            while (t >= 1 && seg < route.length - 1) {{ t -= 1; seg++; }}
+            if (seg >= route.length - 1) {{ next(); return; }}
+            var aa = route[seg], bb = route[seg + 1];
+            pos = [aa[1] + (bb[1] - aa[1]) * t, aa[0] + (bb[0] - aa[0]) * t];
+            place();
+            requestAnimationFrame(step);
+        }}
+
+        function next() {{
+            var from = pos;
+            var to = randomPoint();
+            fetchRoute(from, to, function(coords) {{
+                if (coords && coords.length > 1) {{
+                    route = coords; seg = 0; t = 0;
+                    requestAnimationFrame(step);
+                }} else {{
+                    setTimeout(next, 3000);
+                }}
+            }});
+        }}
+
+        function init() {{
+            var map = getMap();
+            if (!map) {{ setTimeout(init, 500); return; }}
+            map.on('move zoom resize', place);
+            next();
+        }}
+
+        setTimeout(init, 1200);
+    }})();
+    </script>
+    """
+    m.get_root().html.add_child(folium.Element(godzilla_html))
 
     return m
 
