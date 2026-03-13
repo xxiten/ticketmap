@@ -110,15 +110,16 @@ def load_config():
         raise FileNotFoundError(f"Konfigurationsdatei '{CONFIG_FILE}' fehlt.")
 
 
-def fetch_data_from_api(token):
+def fetch_data_from_api(token, ticket_base_url=None):
     """Fetch ticket data from API."""
     token = os.environ.get('TICKETMAP_API_TOKEN', token)
+    base_url = ticket_base_url or TICKET_BASE_URL
     url = (
-        f'{TICKET_BASE_URL}/api2/Ticket/search/'
+        f'{base_url}/api2/Ticket/search/'
         f'?token={token}&params%5BtypeId%5D=6&params%5Bstatus%5D=1'
     )
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=60)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.Timeout:
@@ -510,6 +511,9 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
         var FPS       = 60;
         var M_PER_FRAME = SPEED_KMH * 1000 / 3600 / FPS;
 
+        var BRUNECK         = [46.7963, 11.9358];
+        var START_RADIUS_KM = 50;
+
         function getMap() {{
             var keys = Object.keys(window);
             for (var i = 0; i < keys.length; i++) {{
@@ -526,6 +530,25 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
                 CENTER[0] + (Math.random() - 0.5) * SPREAD * 2,
                 CENTER[1] + (Math.random() - 0.5) * SPREAD * 2
             ];
+        }}
+
+        function randomStartPoint(cb) {{
+            var r     = Math.sqrt(Math.random()) * START_RADIUS_KM * 1000;
+            var theta = Math.random() * 2 * Math.PI;
+            var lat   = BRUNECK[0] + (r * Math.cos(theta)) / 111000;
+            var lon   = BRUNECK[1] + (r * Math.sin(theta)) / (111000 * Math.cos(BRUNECK[0] * Math.PI / 180));
+            var url   = 'https://router.project-osrm.org/nearest/v1/driving/' + lon + ',' + lat;
+            fetch(url)
+                .then(function(res) {{ return res.json(); }})
+                .then(function(d) {{
+                    if (d.waypoints && d.waypoints[0]) {{
+                        var loc = d.waypoints[0].location;
+                        cb([loc[1], loc[0]]);
+                    }} else {{
+                        cb([lat, lon]);
+                    }}
+                }})
+                .catch(function() {{ cb([lat, lon]); }});
         }}
 
         function segDist(a, b) {{
@@ -552,7 +575,7 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
         el.textContent = '🦖';
         document.body.appendChild(el);
 
-        var pos = randomPoint(), route = [], seg = 0, t = 0;
+        var pos = null, route = [], seg = 0, t = 0;
 
         function place() {{
             var map = getMap();
@@ -594,7 +617,10 @@ def create_folium_map(markers, warning_list, center_point, language='de', ticket
             var map = getMap();
             if (!map) {{ setTimeout(init, 500); return; }}
             map.on('move zoom resize', place);
-            next();
+            randomStartPoint(function(startPos) {{
+                pos = startPos;
+                next();
+            }});
         }}
 
         setTimeout(init, 1200);
@@ -620,14 +646,14 @@ def generate_map(config, language='de'):
     logging.info("=== Starting map generation ===")
 
     # Step 1: Fetch ticket data from API
-    data = fetch_data_from_api(token=config['api_token'])
+    ticket_base_url = config.get('ticket_base_url', TICKET_BASE_URL)
+    output_map_file = config.get('output_map_file', OUTPUT_MAP_FILE)
+    data = fetch_data_from_api(token=config['api_token'], ticket_base_url=ticket_base_url)
 
     if not data:
         logging.warning("No ticket data returned from API - map will have no markers")
 
     # Step 2: Process tickets into markers (no caching)
-    ticket_base_url = config.get('ticket_base_url', TICKET_BASE_URL)
-    output_map_file = config.get('output_map_file', OUTPUT_MAP_FILE)
     markers, warnings = process_tickets_to_markers(
         data=data,
         center_point=tuple(config['center_point']),

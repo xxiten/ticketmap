@@ -18,7 +18,7 @@ A Python script that fetches open on-site tickets from the Visoma ticketing syst
 - Multilingual UI: German, Italian, English
 - Company logo (embedded, no external requests) and generation timestamp displayed on the map
 - Atomic output — map is written to a temp file then moved into place, preventing a corrupt live file on crash
-- 🦖 Godzilla roams the map along real streets at 250 km/h (via OSRM routing)
+- 🦖 Godzilla roams the map along real streets at 250 km/h (via OSRM routing), spawning at a random location within 50 km of Bruneck
 
 ## Requirements
 
@@ -84,5 +84,6 @@ python generate.py -l en
 - The Photon geocoder (by Komoot) is used instead of the public Nominatim API to avoid rate limiting on bulk geocoding runs.
 - The API token in `config.json` is sensitive — do not commit it to a public repository. As an alternative, set the `TICKETMAP_API_TOKEN` environment variable, which takes precedence over the config file value.
 - The overdue threshold is controlled by the `OVERDUE_DAYS` constant in `generate.py` (default: 30 days).
-- Godzilla uses the public OSRM routing API (`router.project-osrm.org`) — no API key required.
+- The API request timeout is 60 seconds — ensure the Visoma server is reachable from the machine running the script.
+- Godzilla uses the public OSRM routing API (`router.project-osrm.org`) for both the nearest-road snap on spawn and route planning — no API key required.
 
