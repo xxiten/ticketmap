@@ -167,6 +167,25 @@ def is_ticket_overdue(created_str):
         return False
 
 
+def format_created_date_de(created_str):
+    """Format ticket creation date as German date (DD.MM.YYYY)."""
+    if not created_str:
+        return ''
+
+    created_clean = created_str.strip()
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(created_clean, fmt).strftime("%d.%m.%Y")
+        except ValueError:
+            continue
+
+    # Fallback for unexpected formats that still start with YYYY-MM-DD.
+    try:
+        return datetime.strptime(created_clean[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return created_clean
+
+
 def haversine_km(point_a, point_b):
     """Return great-circle distance in kilometers between two (lat, lon) points."""
     lat1, lon1 = point_a
@@ -491,7 +510,7 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
 
                 # Build popup HTML
                 overdue = is_ticket_overdue(created_str)
-                created_display = html.escape(created_str[:10]) if created_str else ''
+                created_display = html.escape(format_created_date_de(created_str))
                 created_cell_style = "padding:5px 8px; border:1px solid #ccc; color:#c0392b; font-weight:bold;" if overdue else "padding:5px 8px; border:1px solid #ccc;"
                 overdue_label = f" ⚠ {lang['overdue']}" if overdue else ''
                 popup_html = f"""
