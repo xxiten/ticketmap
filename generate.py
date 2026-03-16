@@ -511,32 +511,40 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
                 # Build popup HTML
                 overdue = is_ticket_overdue(created_str)
                 created_display = html.escape(format_created_date_de(created_str))
-                created_cell_style = "padding:5px 8px; border:1px solid #ccc; color:#c0392b; font-weight:bold;" if overdue else "padding:5px 8px; border:1px solid #ccc;"
-                overdue_label = f" ⚠ {lang['overdue']}" if overdue else ''
+                overdue_badge = (
+                    f"<span style=\"display:inline-block; margin-left:8px; padding:2px 7px; border-radius:999px;"
+                    f" background:#fdf0ef; color:#b42318; font-size:11px; font-weight:700;\">"
+                    f"{html.escape(lang['overdue'])}</span>"
+                ) if overdue else ""
                 popup_html = f"""
-                <div style="width:320px; font-size:13px;">
-                    <table style="width:100%; border-collapse:collapse;">
-                        <tr>
-                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap; width:1%;">{lang['ticket']}</td>
-                            <td style="padding:5px 8px; border:1px solid #ccc;"><a href="{ticket_url}" target="_blank">{html.escape(str(ticket_id))}</a></td>
-                        </tr>
-                        <tr>
-                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['customer']}</td>
-                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(customer_name)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['address']}</td>
-                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(address)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['type']}</td>
-                            <td style="padding:5px 8px; border:1px solid #ccc;">{html.escape(title)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:5px 8px; background:#f0f0f0; font-weight:bold; border:1px solid #ccc; white-space:nowrap;">{lang['created']}</td>
-                            <td style="{created_cell_style}">{created_display}{overdue_label}</td>
-                        </tr>
-                    </table>
+                <div style="width:320px; font-family:'Segoe UI', Arial, sans-serif; font-size:13px; color:#1f2937;">
+                    <div style="background:#ffffff; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; box-shadow:0 10px 22px rgba(15,23,42,0.10);">
+                        <div style="padding:10px 12px; background:linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%); border-bottom:1px solid #e5e7eb;">
+                            <div style="font-size:11px; letter-spacing:0.02em; text-transform:uppercase; color:#64748b; font-weight:700;">{lang['ticket']}</div>
+                            <div style="margin-top:3px; font-size:16px; font-weight:700; line-height:1.2;">
+                                <a href="{ticket_url}" target="_blank" style="color:#0073c0; text-decoration:underline; text-underline-offset:2px; font-weight:700;">#{html.escape(str(ticket_id))}</a>
+                                {overdue_badge}
+                            </div>
+                        </div>
+                        <div style="padding:10px 12px; display:grid; gap:7px;">
+                            <div style="display:grid; grid-template-columns:90px 1fr; align-items:start; gap:8px;">
+                                <div style="color:#64748b; font-weight:700;">{lang['customer']}</div>
+                                <div style="color:#111827;">{html.escape(customer_name)}</div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:90px 1fr; align-items:start; gap:8px;">
+                                <div style="color:#64748b; font-weight:700;">{lang['address']}</div>
+                                <div style="color:#111827;">{html.escape(address)}</div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:90px 1fr; align-items:start; gap:8px;">
+                                <div style="color:#64748b; font-weight:700;">{lang['type']}</div>
+                                <div style="color:#111827;">{html.escape(title)}</div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:90px 1fr; align-items:start; gap:8px;">
+                                <div style="color:#64748b; font-weight:700;">{lang['created']}</div>
+                                <div style="color:#111827; font-weight:{'700' if overdue else '500'};">{created_display}</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 """
 
