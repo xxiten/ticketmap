@@ -3,14 +3,14 @@ import json
 import html
 import base64
 import shutil
+import re
 import folium
 import logging
 import requests
 import argparse
+import math
+from types import SimpleNamespace
 from folium.plugins import Fullscreen
-from geopy.geocoders import Photon
-from geopy.distance import geodesic
-from geopy.extra.rate_limiter import RateLimiter
 from datetime import datetime, timedelta
 
 # === KONSTANTEN ===
@@ -18,7 +18,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, 'config.json')
 OUTPUT_MAP_FILE = '/var/www/html/index.html'
 TICKET_BASE_URL = 'https://tickets.netixx.it:10443'
-VERSION = '1.0.2'
+VERSION = '1.1.0'
 LOGO_URL = 'https://www.netixx.it/wp-content/themes/netixx/img/logo.svg'
 
 STATUS_COLOR = {
@@ -30,6 +30,18 @@ DEFAULT_MARKER_COLOR = "blue"
 APPROXIMATE_MARKER_COLOR = "black"
 OVERDUE_MARKER_COLOR = "darkred"
 OVERDUE_DAYS = 30
+
+SOUTH_TYROL_MUNICIPALITY_ALIASES = {
+    "sand in taufers": ["Campo Tures"],
+    "campo tures": ["Sand in Taufers"],
+    "muehlwald": ["Selva dei Molini", "Muhlwald"],
+    "mühlwald": ["Selva dei Molini", "Muehlwald", "Muhlwald"],
+    "selva dei molini": ["Muhlwald", "Muehlwald", "Mühlwald"],
+    "wengen": ["La Valle"],
+    "la valle": ["Wengen"],
+    "bruneck": ["Brunico"],
+    "brunico": ["Bruneck"],
+}
 
 # === MAP CONFIGURATION ===
 MAP_DEFAULT_ZOOM = 11
@@ -155,6 +167,25 @@ def is_ticket_overdue(created_str):
         return False
 
 
+def haversine_km(point_a, point_b):
+    """Return great-circle distance in kilometers between two (lat, lon) points."""
+    lat1, lon1 = point_a
+    lat2, lon2 = point_b
+
+    r = 6371.0088  # Mean Earth radius in kilometers.
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
 def get_marker_color(ticket, is_approximate=False):
     """Determine marker color based on ticket age and location accuracy."""
     if is_approximate:
@@ -167,11 +198,197 @@ def get_marker_color(ticket, is_approximate=False):
 
 
 def extract_city(address):
-    """Extract city name from comma-separated address."""
-    if ',' in address:
-        return address.split(',')[-1].strip()
-    else:
+    """Extract municipality name from address and strip postal code if present."""
+    if not address:
         return None
+
+    parts = [p.strip() for p in address.split(',') if p and p.strip()]
+    if not parts:
+        return None
+
+    # Usually the municipality is in the last segment (e.g. "39030 Wengen").
+    candidate = parts[-1]
+    match = re.match(r'^\s*\d{4,5}\s+(.+?)\s*$', candidate)
+    if match:
+        return match.group(1).strip()
+
+    return candidate
+
+
+def expand_german_text_variants(text):
+    """Return text plus common umlaut/ss variants for better geocoder matching."""
+    base = (text or "").strip()
+    if not base:
+        return []
+
+    variants = [base]
+    translit = (
+        base
+        .replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("Ä", "Ae")
+        .replace("Ö", "Oe")
+        .replace("Ü", "Ue")
+        .replace("ß", "ss")
+    )
+    plain = (
+        base
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("ü", "u")
+        .replace("Ä", "A")
+        .replace("Ö", "O")
+        .replace("Ü", "U")
+        .replace("ß", "ss")
+    )
+
+    for candidate in [translit, plain]:
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+
+    return variants
+
+
+def remove_locality_prefixes(street):
+    """Remove generic locality prefixes that can confuse geocoders."""
+    if not street:
+        return street
+
+    segments = [seg.strip() for seg in street.split(',')]
+    cleaned = []
+    for seg in segments:
+        cleaned_seg = re.sub(
+            r'^(hauptort|fraktion|frazione|loc\.?|localita|località)\s+',
+            '',
+            seg,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned.append(cleaned_seg or seg)
+
+    return ", ".join(cleaned)
+
+
+def expand_city_aliases(city):
+    """Return city name variants (German/Italian aliases + umlaut alternatives)."""
+    base = (city or "").strip()
+    if not base:
+        return []
+
+    variants = []
+
+    def _add(value):
+        for item in expand_german_text_variants(value):
+            if item not in variants:
+                variants.append(item)
+
+    _add(base)
+    for alias in SOUTH_TYROL_MUNICIPALITY_ALIASES.get(base.lower(), []):
+        _add(alias)
+
+    return variants
+
+
+def build_geocode_variants(address):
+    """Build robust query variants for Photon from a single address string."""
+    clean_address = " ".join((address or "").split())
+    if not clean_address:
+        return []
+
+    variants = []
+
+    def add_variant(query):
+        q = " ".join((query or "").split())
+        if q and q not in variants:
+            variants.append(q)
+
+    # Base variants with South Tyrol context.
+    for addr_variant in expand_german_text_variants(clean_address):
+        add_variant(f"{addr_variant}, South Tyrol, Italy")
+        add_variant(f"{addr_variant}, S\u00fcdtirol, Italien")
+        add_variant(f"{addr_variant}, Alto Adige, Italy")
+        add_variant(f"{addr_variant}, Province of Bolzano, Italy")
+        add_variant(addr_variant)
+
+    parts = [p.strip() for p in clean_address.split(',') if p and p.strip()]
+    if len(parts) >= 2:
+        street = ", ".join(parts[:-1]).strip()
+        tail = parts[-1]
+        match = re.match(r'^\s*(\d{4,5})\s+(.+?)\s*$', tail)
+
+        if match:
+            plz, city = match.groups()
+            city = city.strip()
+
+            street_candidates = [
+                street,
+                street.replace(" - ", ", "),
+                street.replace(" - ", " "),
+                remove_locality_prefixes(street),
+                remove_locality_prefixes(street.replace(" - ", ", ")),
+            ]
+            street_candidates = [s for s in street_candidates if s]
+
+            city_variants = expand_city_aliases(city)
+
+            # Additional variants that separate street, postal code and city.
+            for city_variant in city_variants:
+                add_variant(f"{city_variant}, South Tyrol, Italy")
+                add_variant(f"{city_variant}, Alto Adige, Italy")
+                add_variant(f"{plz} {city_variant}, Italy")
+
+                for street_variant in street_candidates:
+                    for street_text in expand_german_text_variants(street_variant):
+                        add_variant(f"{street_text}, {city_variant}, South Tyrol, Italy")
+                        add_variant(f"{street_text}, {city_variant}, Alto Adige, Italy")
+                        add_variant(f"{street_text}, {plz} {city_variant}, Italy")
+
+    return variants
+
+
+def build_here_geocode_fn(here_api_key, center_point=None):
+    """Build a HERE geocode callable compatible with existing geocode flow."""
+    endpoint = "https://geocode.search.hereapi.com/v1/geocode"
+    session = requests.Session()
+    at_value = None
+    if center_point and len(center_point) == 2:
+        at_value = f"{center_point[0]},{center_point[1]}"
+
+    def geocode(query):
+        params = {
+            "q": query,
+            "apiKey": here_api_key,
+            "limit": 1,
+            "in": "countryCode:ITA",
+        }
+        if at_value:
+            params["at"] = at_value
+
+        try:
+            response = session.get(endpoint, params=params, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+        except requests.exceptions.HTTPError as e:
+            status = getattr(response, "status_code", "?")
+            logging.warning(f"HERE-HTTP-Fehler für '{query}' ({status}): {e}")
+            return None
+        except Exception as e:
+            logging.warning(f"HERE-Geocoding-Fehler für '{query}': {type(e).__name__}: {e}")
+            return None
+
+        items = payload.get("items", [])
+        if not items:
+            return None
+
+        position = items[0].get("position", {})
+        lat = position.get("lat")
+        lng = position.get("lng")
+        if lat is None or lng is None:
+            return None
+
+        return SimpleNamespace(latitude=lat, longitude=lng)
+
+    return geocode
 
 
 def get_coordinates_extended(address, geocode_fn=None):
@@ -180,7 +397,7 @@ def get_coordinates_extended(address, geocode_fn=None):
 
     Args:
         address: Street address to geocode
-        geocode_fn: Rate-limited geocode callable (Nominatim RateLimiter)
+        geocode_fn: Primary rate-limited geocode callable
 
     Returns:
         tuple: (coords, is_approximate, municipality)
@@ -189,11 +406,7 @@ def get_coordinates_extended(address, geocode_fn=None):
             municipality: Name of municipality if approximate
     """
     # Try different address variants
-    variants = [
-        address + ", South Tyrol, Italy",
-        address + ", Südtirol, Italien",
-        address
-    ]
+    variants = build_geocode_variants(address)
 
     for variant in variants:
         try:
@@ -213,6 +426,12 @@ def get_coordinates_extended(address, geocode_fn=None):
         except Exception as e:
             logging.warning(f"Geocoding-Fehler für Gemeinde '{ortsteil}': {type(e).__name__}: {e}")
             location = None
+        if not location:
+            try:
+                location = geocode_fn(f"{ortsteil}, Province of Bolzano, Italy")
+            except Exception as e:
+                logging.warning(f"Geocoding-Fehler für Gemeinde '{ortsteil}': {type(e).__name__}: {e}")
+                location = None
         if location:
             coords = (location.latitude, location.longitude)
             return coords, True, ortsteil
@@ -222,7 +441,7 @@ def get_coordinates_extended(address, geocode_fn=None):
     return None, False, None
 
 
-def process_tickets_to_markers(data, center_point, radius_km, language='de', ticket_base_url=None):
+def process_tickets_to_markers(data, center_point, radius_km, language='de', ticket_base_url=None, here_api_key=None):
     """
     Process ticket data into map markers.
 
@@ -239,14 +458,11 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
     """
     markers = []
     warning_list = []
-    geolocator = Photon(user_agent="street_mapper_idm", timeout=10)
-    geocode = RateLimiter(
-        geolocator.geocode,
-        min_delay_seconds=1,
-        max_retries=3,
-        error_wait_seconds=10,
-        swallow_exceptions=True
-    )
+    effective_here_api_key = os.environ.get('HERE_API_KEY', here_api_key)
+    if not effective_here_api_key:
+        raise ValueError("HERE API key fehlt. Setze 'here_api_key' in config.json oder Umgebungsvariable HERE_API_KEY.")
+
+    geocode = build_here_geocode_fn(effective_here_api_key, center_point=center_point)
     lang = LANG_TEXT.get(language, LANG_TEXT['de'])
     if ticket_base_url is None:
         ticket_base_url = TICKET_BASE_URL
@@ -268,7 +484,7 @@ def process_tickets_to_markers(data, center_point, radius_km, language='de', tic
         coords, is_approx, ortsteil = get_coordinates_extended(address, geocode_fn=geocode)
 
         if coords:
-            distance = geodesic(center_point, coords).km
+            distance = haversine_km(center_point, coords)
             if distance <= radius_km:
                 # Build ticket URL
                 ticket_url = html.escape(f"{ticket_base_url}/Ticket/view/id/{ticket_id}")
@@ -659,7 +875,8 @@ def generate_map(config, language='de'):
         center_point=tuple(config['center_point']),
         radius_km=config['radius_km'],
         language=language,
-        ticket_base_url=ticket_base_url
+        ticket_base_url=ticket_base_url,
+        here_api_key=config.get('here_api_key')
     )
 
     logging.info(f"Summary: {len(markers)} markers placed, {len(warnings)} geocoding warnings")
