@@ -2,7 +2,7 @@
     "api_token": "VEd0k8mSYAJwc8WFjjBaiV50tqZFGluW",
     "here_api_key": "O22xyYPenRYcvYg8rG262eLF-IGwziJF-yih7-PlsOA",
     "center_point": [46.7976, 11.9395],
-    "radius_km": 120,
+    "radius_km": 300,
     "language": "de",
     "output_map_file": "/var/www/html/index.html",
     "ticket_base_url": "https://tickets.netixx.it:10443"
